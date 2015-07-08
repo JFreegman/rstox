@@ -254,6 +254,16 @@ pub enum Event {
     GroupNamelistChange(i32, i32, ChatChange),
 }
 
+pub enum FileEvent<'a> {
+    ReceiveControl(FileControl),
+    ChunkRequest(u64, usize),
+    // [friend_number, file_number,] kind, file_size, file_name
+    Receive(FileKind, u64, &'a str),
+    ReceiveChunk(u64, &'a [u8]),
+}
+
+pub type FnFile = FnMut(&mut Tox, u32, u32, FileEvent) + 'static;
+
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum ProxyType {
@@ -394,6 +404,7 @@ pub struct Tox {
     event_rx: Rc<RefCell<Receiver<Event>>>,
     #[allow(dead_code)]
     event_tx: Box<Sender<Event>>,
+    on_file: Option<Box<Box<FnFile>>>,
 }
 
 impl Drop for Tox {
@@ -452,7 +463,22 @@ impl Tox {
             raw: tox,
             event_rx: rrrx,
             event_tx: btx,
+            on_file: None,
         })
+    }
+
+    pub fn on_file_event(&mut self, on_file: Box<FnFile>) {
+        unsafe {
+            let closure = Box::new(on_file);
+            let data: *mut c_void = mem::transmute(&*closure);
+
+            ll::tox_callback_file_recv_control(self.raw, on_file_recv_control, data);
+            ll::tox_callback_file_chunk_request(self.raw, on_file_chunk_request, data);
+            ll::tox_callback_file_recv(self.raw, on_file_recv, data);
+            //ll::
+
+            self.on_file = Some(closure);
+        }
     }
 
     /// Ticks the Tox and returns an iterator to the Tox events
@@ -500,7 +526,7 @@ impl Tox {
         Ok(())
     }
 
-    /// Get self connection status
+     /// Get self connection status
     pub fn get_connection_status(&self) -> Connection {
         unsafe { ll::tox_self_get_connection_status(self.raw) }
     }
@@ -993,4 +1019,47 @@ extern fn on_group_namelist_change(_: *mut ll::Tox, groupnumber: i32, peernumber
     }
 }
 
+
+extern fn on_file_recv_control(raw: *mut ll::Tox, fnum: u32, file_num: u32, control: FileControl, data: *mut c_void) {
+    unsafe {
+        let closure = &mut **mem::transmute::<_, &mut &mut FnFile>(data);
+        let mut tox = Tox::from_raw_tox(raw);
+        (*closure)(&mut tox, fnum, file_num, FileEvent::ReceiveControl(control));
+        mem::forget(tox);
+    }
+}
+
+extern fn on_file_chunk_request(raw: *mut ll::Tox, fnum: u32, file_num: u32,
+        position: u64, length: usize, data: *mut c_void) {
+    unsafe {
+        let closure = &mut **mem::transmute::<_, &mut &mut FnFile>(data);
+        let mut tox = Tox::from_raw_tox(raw);
+        (*closure)(&mut tox, fnum, file_num, FileEvent::ChunkRequest(position, length));
+        mem::forget(tox);
+    }
+}
+
+extern fn on_file_recv(raw: *mut ll::Tox, fnum: u32, file_num: u32,
+        kind: u32, file_size: u64, filename: *const u8, length: usize, data: *mut c_void) {
+    use std::borrow::Borrow;
+    unsafe {
+        let closure = &mut **mem::transmute::<_, &mut &mut FnFile>(data);
+        let kind: FileKind = mem::transmute(kind);
+        let mut tox = Tox::from_raw_tox(raw);
+        let name = String::from_utf8_lossy(slice::from_raw_parts(filename, length));
+        (*closure)(&mut tox, fnum, file_num, FileEvent::Receive(kind, file_size, name.borrow()));
+        mem::forget(tox);
+    }
+}
+
+extern fn on_file_recv_chunk(raw: *mut ll::Tox, fnum: u32, file_num: u32,
+        position: u64, chunk: *const u8, length: usize, data: *mut c_void) {
+    unsafe {
+        let closure = &mut **mem::transmute::<_, &mut &mut FnFile>(data);
+        let mut tox = Tox::from_raw_tox(raw);
+        let chunk = slice::from_raw_parts(chunk, length);
+        (*closure)(&mut tox, fnum, file_num, FileEvent::ReceiveChunk(position, chunk));
+        mem::forget(tox);
+    }
+}
 // END: Callback pack

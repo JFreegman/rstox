@@ -302,7 +302,7 @@ extern "C" {
                             file_number: u32, control: FileControl,
                             error: *mut errors::FileControlError) -> u8;
     pub fn tox_callback_file_recv_control(tox: *mut Tox,
-                                          function: tox_file_recv_cb,
+                                          function: tox_file_recv_control_cb,
                                           user_data: *mut ::libc::c_void)
      -> ();
     pub fn tox_file_seek(tox: *mut Tox, friend_number: u32,
